@@ -1,0 +1,345 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Employee Productivity Tracking System Infrastructure'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - prod
+    Description: Environment for deployment
+
+Resources:
+  # Lambda Execution Role
+  LambdaExecutionRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+      Policies:
+        - PolicyName: BedrockAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'bedrock:InvokeModel'
+                  - 'bedrock:InvokeModelWithResponseStream'
+                Resource: '*'
+
+  # Visual Analysis Lambda
+  VisualAnalysisLambda:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-visual-analysis-${Environment}'
+      Handler: index.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        ZipFile: |
+          def lambda_handler(event, context):
+              return {
+                  'statusCode': 200,
+                  'body': 'Function not implemented'
+              }
+      Runtime: python3.11
+      Timeout: 300
+      MemorySize: 1024
+      Environment:
+        Variables:
+          ENVIRONMENT: !Ref Environment
+
+  # Activity Pattern Lambda
+  ActivityPatternLambda:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-activity-pattern-${Environment}'
+      Handler: index.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        ZipFile: |
+          def lambda_handler(event, context):
+              return {
+                  'statusCode': 200,
+                  'body': 'Function not implemented'
+              }
+      Runtime: python3.11
+      Timeout: 300
+      MemorySize: 1024
+      Environment:
+        Variables:
+          ENVIRONMENT: !Ref Environment
+
+  # Productivity Assessment Lambda
+  ProductivityAssessmentLambda:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-productivity-assessment-${Environment}'
+      Handler: index.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        ZipFile: |
+          def lambda_handler(event, context):
+              return {
+                  'statusCode': 200,
+                  'body': 'Function not implemented'
+              }
+      Runtime: python3.11
+      Timeout: 300
+      MemorySize: 1024
+      Environment:
+        Variables:
+          ENVIRONMENT: !Ref Environment
+
+  # Step Functions State Machine
+  ProductivityTrackingStateMachine:
+    Type: 'AWS::StepFunctions::StateMachine'
+    Properties:
+      StateMachineName: !Sub '${AWS::StackName}-state-machine-${Environment}'
+      RoleArn: !GetAtt StepFunctionsExecutionRole.Arn
+      DefinitionString: !Sub |
+        {
+          "Comment": "Employee Productivity Tracking Workflow",
+          "StartAt": "VisualAnalysis",
+          "States": {
+            "VisualAnalysis": {
+              "Type": "Task",
+              "Resource": "${VisualAnalysisLambda.Arn}",
+              "Next": "ActivityPattern",
+              "Catch": [{
+                "ErrorEquals": ["States.ALL"],
+                "Next": "HandleError"
+              }]
+            },
+            "ActivityPattern": {
+              "Type": "Task",
+              "Resource": "${ActivityPatternLambda.Arn}",
+              "Next": "ProductivityAssessment",
+              "Catch": [{
+                "ErrorEquals": ["States.ALL"],
+                "Next": "HandleError"
+              }]
+            },
+            "ProductivityAssessment": {
+              "Type": "Task",
+              "Resource": "${ProductivityAssessmentLambda.Arn}",
+              "End": true,
+              "Catch": [{
+                "ErrorEquals": ["States.ALL"],
+                "Next": "HandleError"
+              }]
+            },
+            "HandleError": {
+              "Type": "Pass",
+              "Result": {
+                "error": "Workflow execution failed"
+              },
+              "End": true
+            }
+          }
+        }
+
+  # Step Functions Role
+  StepFunctionsExecutionRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: states.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Policies:
+        - PolicyName: LambdaInvoke
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'lambda:InvokeFunction'
+                Resource:
+                  - !GetAtt VisualAnalysisLambda.Arn
+                  - !GetAtt ActivityPatternLambda.Arn
+                  - !GetAtt ProductivityAssessmentLambda.Arn
+
+  # API Gateway
+  ProductivityAPI:
+    Type: 'AWS::ApiGateway::RestApi'
+    Properties:
+      Name: !Sub '${AWS::StackName}-api-${Environment}'
+
+  ProductivityResource:
+    Type: 'AWS::ApiGateway::Resource'
+    Properties:
+      ParentId: !GetAtt ProductivityAPI.RootResourceId
+      PathPart: 'track'
+      RestApiId: !Ref ProductivityAPI
+
+  ProductivityMethod:
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      HttpMethod: POST
+      ResourceId: !Ref ProductivityResource
+      RestApiId: !Ref ProductivityAPI
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:states:action/StartExecution'
+        Credentials: !GetAtt APIGatewayRole.Arn
+        RequestParameters:
+          integration.request.header.Content-Type: "'application/x-amz-json-1.0'"
+        RequestTemplates:
+          application/json: !Sub |
+            {
+              "input": "$util.escapeJavaScript($input.body)",
+              "name": "$context.requestId",
+              "stateMachineArn": "${ProductivityTrackingStateMachine}"
+            }
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            ResponseTemplates:
+              application/json: |
+                {
+                  "executionArn": "$input.path('$.executionArn')",
+                  "startDate": "$input.path('$.startDate')"
+                }
+          - StatusCode: 400
+            SelectionPattern: '4\d{2}'
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            ResponseTemplates:
+              application/json: |
+                {
+                  "error": "Bad request",
+                  "message": $input.path('$.message')
+                }
+          - StatusCode: 500
+            SelectionPattern: '5\d{2}'
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            ResponseTemplates:
+              application/json: |
+                {
+                  "error": "Internal server error",
+                  "message": $input.path('$.message')
+                }
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+          ResponseModels:
+            application/json: 'Empty'
+        - StatusCode: 400
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+          ResponseModels:
+            application/json: 'Error'
+        - StatusCode: 500
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+          ResponseModels:
+            application/json: 'Error'
+
+  ProductivityOptionsMethod:
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      AuthorizationType: NONE
+      HttpMethod: OPTIONS
+      Integration:
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key'"
+              method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+        Type: MOCK
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+      ResourceId: !Ref ProductivityResource
+      RestApiId: !Ref ProductivityAPI
+
+  APIGatewayRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: apigateway.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Policies:
+        - PolicyName: StepFunctionsExecute
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'states:StartExecution'
+                Resource: !Ref ProductivityTrackingStateMachine
+
+  ApiDeployment:
+    Type: 'AWS::ApiGateway::Deployment'
+    DependsOn: 
+      - ProductivityMethod
+      - ProductivityOptionsMethod
+    Properties:
+      RestApiId: !Ref ProductivityAPI
+
+  ApiStage:
+    Type: 'AWS::ApiGateway::Stage'
+    DependsOn: ApiDeployment
+    Properties:
+      DeploymentId: !Ref ApiDeployment
+      RestApiId: !Ref ProductivityAPI
+      StageName: !Ref Environment
+
+  ApiUsagePlan:
+    Type: 'AWS::ApiGateway::UsagePlan'
+    DependsOn: ApiStage
+    Properties:
+      ApiStages:
+        - ApiId: !Ref ProductivityAPI
+          Stage: !Ref Environment
+      Description: 'Usage plan for Employee Productivity Tracking API'
+      Quota:
+        Limit: 1000
+        Period: DAY
+      Throttle:
+        BurstLimit: 10
+        RateLimit: 5
+
+Outputs:
+  ApiEndpoint:
+    Description: 'API Gateway endpoint URL'
+    Value: !Sub 'https://${ProductivityAPI}.execute-api.${AWS::Region}.amazonaws.com/${Environment}/track'
+  
+  StateMachineArn:
+    Description: 'Step Functions state machine ARN'
+    Value: !Ref ProductivityTrackingStateMachine
+  
+  ApiId:
+    Description: 'API Gateway ID'
+    Value: !Ref ProductivityAPI
+
+  Region:
+    Description: 'AWS Region'
+    Value: !Ref 'AWS::Region'
+
